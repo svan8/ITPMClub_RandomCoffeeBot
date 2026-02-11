@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -8,7 +9,8 @@ from pathlib import Path
 import schedule
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.ext import PollAnswerHandler, Updater
+from telegram.ext import Application, PollAnswerHandler, ContextTypes
+from telegram.error import TelegramError
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -138,7 +140,7 @@ def pair_up(bot: Bot) -> None:
     save_data()
 
 
-def poll_answer_handler(update, _context) -> None:
+async def poll_answer_handler(update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global participants
 
     if update.poll_answer.poll_id != current_poll_id:
@@ -164,26 +166,36 @@ def schedule_job(day: str, execution_time: str, job, job_name: str) -> None:
     logger.info("Scheduled %s on %s at %s", job_name, day, execution_time)
 
 
-def main() -> None:
+async def run_scheduler(bot: Bot) -> None:
+    while True:
+        schedule.run_pending()
+        await asyncio.sleep(1)
+
+
+async def main() -> None:
     validate_configuration()
 
-    updater = Updater(TOKEN, use_context=True)
-    bot = updater.bot
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(PollAnswerHandler(poll_answer_handler))
+    app = Application.builder().token(TOKEN).build()
+    bot = app.bot
+    app.add_handler(PollAnswerHandler(poll_answer_handler))
 
     load_data()
 
     schedule_job(POLL_DAY, POLL_TIME, lambda: send_poll(bot), "poll")
     schedule_job(PAIRING_DAY, PAIRING_TIME, lambda: pair_up(bot), "pairing")
 
-    updater.start_polling()
     logger.info("Bot started successfully.")
 
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    async with app:
+        await app.start()
+        await app.updater.start_polling(allowed_updates=())
+        try:
+            while True:
+                schedule.run_pending()
+                await asyncio.sleep(1)
+        finally:
+            await app.stop()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
