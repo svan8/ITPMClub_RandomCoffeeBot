@@ -1,121 +1,189 @@
-import telegram
-from telegram.ext import Updater, PollAnswerHandler
-import schedule
-import time
 import json
+import logging
+import os
 import random
+import time
+from pathlib import Path
 
-# Configuration
-TOKEN = 'your_bot_token'  # Replace with your bot token from BotFather
-CHAT_ID = 'your_chat_id'  # Replace with your group chat ID
+import schedule
+from telegram import Bot
+from telegram.constants import ParseMode
+from telegram.ext import PollAnswerHandler, Updater
 
-# Persistent storage files
-POLL_ID_FILE = 'current_poll_id.json'
-PARTICIPANTS_FILE = 'participants.json'
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+POLL_DAY = os.getenv("POLL_DAY", "monday").lower()
+POLL_TIME = os.getenv("POLL_TIME", "10:00")
+PAIRING_DAY = os.getenv("PAIRING_DAY", "wednesday").lower()
+PAIRING_TIME = os.getenv("PAIRING_TIME", "10:00")
+DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 
-# Global variables
+POLL_ID_FILE = DATA_DIR / "current_poll_id.json"
+PARTICIPANTS_FILE = DATA_DIR / "participants.json"
+
 current_poll_id = None
-participants = {}  # Dictionary: user_id -> first_name
+current_poll_message_id = None
+participants = {}
 
-# Load data from files on startup
-def load_data():
-    global current_poll_id, participants
-    try:
-        with open(POLL_ID_FILE, 'r') as f:
-            current_poll_id = json.load(f)
-    except FileNotFoundError:
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+
+def validate_configuration() -> None:
+    if not TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
+    if not CHAT_ID:
+        raise ValueError("TELEGRAM_CHAT_ID environment variable is required")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_data() -> None:
+    global current_poll_id, current_poll_message_id, participants
+
+    if POLL_ID_FILE.exists():
+        with POLL_ID_FILE.open("r", encoding="utf-8") as file:
+            poll_data = json.load(file)
+            current_poll_id = poll_data.get("poll_id")
+            current_poll_message_id = poll_data.get("message_id")
+    else:
         current_poll_id = None
-    try:
-        with open(PARTICIPANTS_FILE, 'r') as f:
-            participants = json.load(f)
-    except FileNotFoundError:
+        current_poll_message_id = None
+
+    if PARTICIPANTS_FILE.exists():
+        with PARTICIPANTS_FILE.open("r", encoding="utf-8") as file:
+            raw_participants = json.load(file)
+            participants = {int(user_id): first_name for user_id, first_name in raw_participants.items()}
+    else:
         participants = {}
 
-# Save data to files
-def save_data():
-    with open(POLL_ID_FILE, 'w') as f:
-        json.dump(current_poll_id, f)
-    with open(PARTICIPANTS_FILE, 'w') as f:
-        json.dump(participants, f)
 
-# Send the weekly poll
-def send_poll():
-    global current_poll_id, participants
-    participants.clear()  # Reset participants for the new week
-    poll = bot.send_poll(
+def save_data() -> None:
+    with POLL_ID_FILE.open("w", encoding="utf-8") as file:
+        json.dump({"poll_id": current_poll_id, "message_id": current_poll_message_id}, file)
+
+    serializable_participants = {str(user_id): first_name for user_id, first_name in participants.items()}
+    with PARTICIPANTS_FILE.open("w", encoding="utf-8") as file:
+        json.dump(serializable_participants, file)
+
+
+def send_poll(bot: Bot) -> None:
+    global current_poll_id, current_poll_message_id, participants
+
+    logger.info("Sending weekly poll to chat %s", CHAT_ID)
+    participants.clear()
+
+    poll_message = bot.send_poll(
         chat_id=CHAT_ID,
         question="Do you want to participate in this week's random coffee call?",
         options=["Yes", "No"],
         is_anonymous=False,
-        allows_multiple_answers=False
+        allows_multiple_answers=False,
     )
-    current_poll_id = poll.poll.id
+    current_poll_id = poll_message.poll.id
+    current_poll_message_id = poll_message.message_id
     save_data()
 
-# Pair up participants and announce in the chat
-def pair_up():
-    global current_poll_id, participants
-    if current_poll_id is None:
-        return
-    # Stop the poll
-    bot.stop_poll(chat_id=CHAT_ID, poll_id=current_poll_id)
-    # Check if there are enough participants
+
+def build_pairs() -> list[tuple[int, ...]]:
     participant_ids = list(participants.keys())
-    if len(participant_ids) < 2:
+    random.shuffle(participant_ids)
+
+    pairs: list[tuple[int, ...]] = []
+    for index in range(0, len(participant_ids), 2):
+        if index + 1 < len(participant_ids):
+            pairs.append((participant_ids[index], participant_ids[index + 1]))
+        elif pairs:
+            pairs[-1] = (*pairs[-1], participant_ids[index])
+        else:
+            pairs.append((participant_ids[index],))
+    return pairs
+
+
+def pair_up(bot: Bot) -> None:
+    global current_poll_id, current_poll_message_id, participants
+
+    if current_poll_id is None or current_poll_message_id is None:
+        logger.info("No active poll found, skipping pair-up.")
+        return
+
+    logger.info("Closing poll and generating pairings.")
+    bot.stop_poll(chat_id=CHAT_ID, message_id=current_poll_message_id)
+
+    if len(participants) < 2:
         bot.send_message(chat_id=CHAT_ID, text="Not enough participants this week.")
     else:
-        # Shuffle and create pairs
-        random.shuffle(participant_ids)
-        pairs = []
-        for i in range(0, len(participant_ids), 2):
-            if i + 1 < len(participant_ids):
-                pairs.append((participant_ids[i], participant_ids[i+1]))
-            else:
-                if pairs:  # If odd number, add to last pair
-                    pairs[-1] = pairs[-1] + (participant_ids[i],)
-        # Create announcement message
-        message = "This week's random coffee pairs are:\n"
+        pairs = build_pairs()
+        message_lines = ["This week's random coffee pairs are:"]
         for pair in pairs:
             mentions = [f"[{participants[user_id]}](tg://user?id={user_id})" for user_id in pair]
             if len(pair) == 2:
-                message += f"- {mentions[0]} and {mentions[1]}\n"
+                message_lines.append(f"- {mentions[0]} and {mentions[1]}")
             elif len(pair) == 3:
-                message += f"- {mentions[0]}, {mentions[1]}, and {mentions[2]}\n"
-        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-    # Reset for next week
+                message_lines.append(f"- {mentions[0]}, {mentions[1]}, and {mentions[2]}")
+            else:
+                message_lines.append(f"- {mentions[0]}")
+
+        bot.send_message(
+            chat_id=CHAT_ID,
+            text="\n".join(message_lines),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
     current_poll_id = None
+    current_poll_message_id = None
     participants.clear()
     save_data()
 
-# Handle poll answers
-def poll_answer_handler(update, context):
+
+def poll_answer_handler(update, _context) -> None:
     global participants
-    if update.poll_answer.poll_id == current_poll_id:
-        user = update.poll_answer.user
-        option = update.poll_answer.option_ids[0]  # 0 = "Yes", 1 = "No"
-        if option == 0:  # User chose "Yes"
-            participants[user.id] = user.first_name
-        else:  # User chose "No" or changed vote
-            participants.pop(user.id, None)
-        save_data()
 
-# Initialize bot
-updater = Updater(TOKEN, use_context=True)
-bot = updater.bot
-dp = updater.dispatcher
-dp.add_handler(PollAnswerHandler(poll_answer_handler))
+    if update.poll_answer.poll_id != current_poll_id:
+        return
 
-# Load existing data
-load_data()
+    user = update.poll_answer.user
+    option = update.poll_answer.option_ids[0] if update.poll_answer.option_ids else 1
 
-# Schedule tasks (adjust times as needed)
-schedule.every().monday.at("10:00").do(send_poll)
-schedule.every().wednesday.at("10:00").do(pair_up)
+    if option == 0:
+        participants[user.id] = user.first_name
+    else:
+        participants.pop(user.id, None)
 
-# Start the bot
-updater.start_polling()
+    save_data()
 
-# Keep the script running
-while True:
-    schedule.run_pending()
-    time.sleep(1)
+
+def schedule_job(day: str, execution_time: str, job, job_name: str) -> None:
+    day_method = getattr(schedule.every(), day, None)
+    if day_method is None:
+        raise ValueError(f"Unsupported day: {day}")
+
+    day_method.at(execution_time).do(job)
+    logger.info("Scheduled %s on %s at %s", job_name, day, execution_time)
+
+
+def main() -> None:
+    validate_configuration()
+
+    updater = Updater(TOKEN, use_context=True)
+    bot = updater.bot
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(PollAnswerHandler(poll_answer_handler))
+
+    load_data()
+
+    schedule_job(POLL_DAY, POLL_TIME, lambda: send_poll(bot), "poll")
+    schedule_job(PAIRING_DAY, PAIRING_TIME, lambda: pair_up(bot), "pairing")
+
+    updater.start_polling()
+    logger.info("Bot started successfully.")
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
