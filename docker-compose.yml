@@ -1,0 +1,12 @@
+services:
+  random-coffee-bot:
+    build: .
+    container_name: random-coffee-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Keep bot state persisted on mounted volume
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data

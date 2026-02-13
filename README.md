@@ -57,6 +57,40 @@ export DATA_DIR="./data"
 python RandomCoffeBot.py
 ```
 
+
+## Docker (Local)
+
+1. Create your env file:
+
+```bash
+cp .env.example .env
+# then edit .env with your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+```
+
+2. Start the bot with Docker Compose:
+
+```bash
+docker compose up -d --build
+```
+
+3. Check logs:
+
+```bash
+docker compose logs -f
+```
+
+4. Stop the bot:
+
+```bash
+docker compose down
+```
+
+Data is persisted in `./data` via a bind mount.
+
+## Docker (AWS)
+
+For AWS deployment using Docker (ECR + ECS Fargate), see `AWS_DEPLOYMENT_GUIDE.md`.
+
 ## Notes
 
 - The bot uses the server's local timezone for scheduling.

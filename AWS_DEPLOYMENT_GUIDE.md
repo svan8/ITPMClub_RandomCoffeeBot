@@ -1,314 +1,177 @@
-# AWS Deployment Guide for Random Coffee Bot
+# AWS Deployment Guide (Docker) for Random Coffee Bot
+
+This guide deploys the bot as a container using **Amazon ECR + Amazon ECS Fargate**.
 
 ## Prerequisites
 
-Before starting, ensure you have:
-- AWS Account with appropriate permissions
-- Telegram Bot Token (from @BotFather)
-- Telegram Chat ID for your group
-- SSH client installed locally
+- AWS account with permissions for ECR, ECS, IAM, and CloudWatch Logs
+- AWS CLI v2 configured locally (`aws configure`)
+- Docker installed locally
+- Telegram bot token and target chat ID
 
 ---
 
-## Step 1: Create and Configure EC2 Instance
+## 1) Build and Push Docker Image to ECR
 
-### 1.1 Launch EC2 Instance
-
-1. Go to [AWS EC2 Console](https://console.aws.amazon.com/ec2/)
-2. Click **Launch Instance**
-3. **Select AMI**: Choose **Ubuntu Server 24.04 LTS** (Free Tier eligible)
-4. **Instance Type**: Select `t2.micro` (Free Tier eligible) or `t2.small` for better performance
-5. **Network Settings**:
-   - Create or select a VPC
-   - Enable auto-assign public IP
-6. **Storage**: 20 GB gp3 (default is fine)
-7. **Security Group**:
-   - Create a new security group
-   - Allow SSH (port 22) from your IP
-   - Outbound: Allow all (bot needs internet for Telegram)
-8. **Key Pair**: Create or use existing `.pem` file
-9. **Launch Instance**
-
-### 1.2 Get Instance Details
-
-- Copy the **Public IPv4 address** of your instance
-- Ensure your `.pem` file has correct permissions: `chmod 400 your-key.pem`
-
----
-
-## Step 2: Connect to Instance via SSH
+Set variables:
 
 ```bash
-ssh -i your-key.pem ubuntu@<PUBLIC_IPV4_ADDRESS>
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export ECR_REPO=random-coffee-bot
+export IMAGE_TAG=latest
 ```
 
-Once connected, you're in the instance terminal. Continue with the following steps there.
-
----
-
-## Step 3: Setup Bot Environment
-
-### 3.1 Update System
+Create ECR repository (if not already created):
 
 ```bash
-sudo apt update
-sudo apt upgrade -y
+aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1 || \
+aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION"
 ```
 
-### 3.2 Install Python 3.10+
+Authenticate Docker to ECR:
 
 ```bash
-sudo apt install -y python3.10 python3.10-venv python3-pip git
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 ```
 
-### 3.3 Create Application Directory
+Build and push image:
 
 ```bash
-sudo mkdir -p /opt/random-coffee-bot
-sudo chown ubuntu:ubuntu /opt/random-coffee-bot
-cd /opt/random-coffee-bot
-```
-
-### 3.4 Clone Repository
-
-```bash
-git clone https://github.com/svan8/ITPMClub_RandomCoffeeBot.git .
-# Or upload your files via SCP
-```
-
-If using SCP from your local machine:
-```bash
-scp -i your-key.pem -r /path/to/RandomCoffeBot.py ubuntu@<PUBLIC_IPV4_ADDRESS>:/opt/random-coffee-bot/
-```
-
-### 3.5 Create Virtual Environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3.6 Install Python Dependencies
-
-```bash
-pip install --upgrade pip
-pip install python-telegram-bot==13.15 schedule
+docker build -t "$ECR_REPO:$IMAGE_TAG" .
+docker tag "$ECR_REPO:$IMAGE_TAG" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+docker push "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
 ```
 
 ---
 
-## Step 4: Configure Environment Variables
-
-### 4.1 Create Environment File
+## 2) Create ECS Cluster
 
 ```bash
-sudo tee /opt/random-coffee-bot/.env > /dev/null <<EOF
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
-POLL_DAY=monday
-POLL_TIME=10:00
-PAIRING_DAY=wednesday
-PAIRING_TIME=10:00
-DATA_DIR=/opt/random-coffee-bot/data
-EOF
-```
-
-Replace the values with your actual credentials.
-
-### 4.2 Secure the File
-
-```bash
-chmod 600 /opt/random-coffee-bot/.env
-```
-
-### 4.3 Test the Bot Manually
-
-```bash
-source venv/bin/activate
-set -a
-source .env
-set +a
-python RandomCoffeBot.py
-```
-
-If it runs without errors, press `Ctrl+C` to stop.
-
----
-
-## Step 5: Setup Systemd Service
-
-### 5.1 Create Service File
-
-```bash
-sudo tee /etc/systemd/system/random-coffee-bot.service > /dev/null <<EOF
-[Unit]
-Description=Random Coffee Bot Telegram Service
-After=network.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/opt/random-coffee-bot
-Environment="PATH=/opt/random-coffee-bot/venv/bin"
-EnvironmentFile=/opt/random-coffee-bot/.env
-ExecStart=/opt/random-coffee-bot/venv/bin/python /opt/random-coffee-bot/RandomCoffeBot.py
-Restart=always
-RestartSec=10
-
-# Standard output/error logging
-StandardOutput=append:/opt/random-coffee-bot/logs/bot.log
-StandardError=append:/opt/random-coffee-bot/logs/bot.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### 5.2 Create Logs Directory
-
-```bash
-mkdir -p /opt/random-coffee-bot/logs
-```
-
-### 5.3 Enable and Start Service
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable random-coffee-bot.service
-sudo systemctl start random-coffee-bot.service
-```
-
-### 5.4 Check Status
-
-```bash
-sudo systemctl status random-coffee-bot.service
-```
-
-View logs:
-```bash
-tail -f /opt/random-coffee-bot/logs/bot.log
+aws ecs create-cluster --cluster-name random-coffee-bot-cluster --region "$AWS_REGION"
 ```
 
 ---
 
-## Step 6: Verify Deployment
+## 3) Create IAM Roles (one-time)
 
-1. **Check bot is running**:
-   ```bash
-   sudo systemctl status random-coffee-bot.service
-   ```
+Create ECS Task Execution role if not present (console is easiest):
 
-2. **Send a test message** to your Telegram group to verify the bot responds
+- Role name: `ecsTaskExecutionRole`
+- Trusted entity: `ecs-tasks.amazonaws.com`
+- Attach policy: `AmazonECSTaskExecutionRolePolicy`
 
-3. **Check logs** for any errors:
-   ```bash
-   tail -30 /opt/random-coffee-bot/logs/bot.log
-   ```
+For CLI users, ensure the role exists and has that policy attached.
 
 ---
 
-## Step 7: Useful Commands for Managing the Bot
+## 4) Create CloudWatch Log Group
 
-### View Logs
 ```bash
-tail -f /opt/random-coffee-bot/logs/bot.log
-```
-
-### Stop the Bot
-```bash
-sudo systemctl stop random-coffee-bot.service
-```
-
-### Start the Bot
-```bash
-sudo systemctl start random-coffee-bot.service
-```
-
-### Restart the Bot
-```bash
-sudo systemctl restart random-coffee-bot.service
-```
-
-### View Recent Logs
-```bash
-journalctl -u random-coffee-bot.service -n 50 --no-pager
-```
-
-### Full Service Logs
-```bash
-journalctl -u random-coffee-bot.service -f
+aws logs create-log-group --log-group-name /ecs/random-coffee-bot --region "$AWS_REGION" 2>/dev/null || true
 ```
 
 ---
 
-## Step 8: (Optional) Setup Automated Updates
+## 5) Register Task Definition
 
-To keep your instance secure, enable automatic security updates:
+Create `task-definition.json`:
+
+```json
+{
+  "family": "random-coffee-bot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "random-coffee-bot",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/random-coffee-bot:latest",
+      "essential": true,
+      "environment": [
+        {"name": "TELEGRAM_BOT_TOKEN", "value": "<YOUR_BOT_TOKEN>"},
+        {"name": "TELEGRAM_CHAT_ID", "value": "<YOUR_CHAT_ID>"},
+        {"name": "POLL_DAY", "value": "monday"},
+        {"name": "POLL_TIME", "value": "10:00"},
+        {"name": "PAIRING_DAY", "value": "wednesday"},
+        {"name": "PAIRING_TIME", "value": "10:00"},
+        {"name": "DATA_DIR", "value": "/app/data"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/random-coffee-bot",
+          "awslogs-region": "<AWS_REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
+```
+
+Replace placeholders and register:
 
 ```bash
-sudo apt install -y unattended-upgrades
-sudo dpkg-reconfigure -plow unattended-upgrades
+aws ecs register-task-definition --cli-input-json file://task-definition.json --region "$AWS_REGION"
+```
+
+> Note: for production, store secrets in AWS Systems Manager Parameter Store or Secrets Manager.
+
+---
+
+## 6) Run as a Scheduled ECS Task (recommended)
+
+Because the bot runs continuously and schedules work internally, run a **single always-on task**:
+
+```bash
+aws ecs run-task \
+  --cluster random-coffee-bot-cluster \
+  --launch-type FARGATE \
+  --task-definition random-coffee-bot \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxx],securityGroups=[sg-xxxx],assignPublicIp=ENABLED}" \
+  --region "$AWS_REGION"
+```
+
+You can also create an ECS Service with desired count = `1` for automatic restart.
+
+---
+
+## 7) Monitoring and Operations
+
+View running tasks:
+
+```bash
+aws ecs list-tasks --cluster random-coffee-bot-cluster --region "$AWS_REGION"
+```
+
+Tail logs:
+
+```bash
+aws logs tail /ecs/random-coffee-bot --follow --region "$AWS_REGION"
+```
+
+Stop task:
+
+```bash
+aws ecs stop-task --cluster random-coffee-bot-cluster --task <TASK_ARN> --region "$AWS_REGION"
 ```
 
 ---
 
-## Security Best Practices
+## Optional: Deploy on EC2 with Docker Compose
 
-1. **Restrict SSH Access**: Update security group to only allow SSH from your IP
-2. **Use IAM Roles**: If accessing AWS services, use IAM roles instead of credentials
-3. **Rotate Bot Token**: Periodically rotate your Telegram bot token
-4. **Monitor Logs**: Regularly check logs for errors or unauthorized access
-5. **Enable CloudWatch**: Set up AWS CloudWatch for monitoring and alerts
-6. **Backup Data**: Regularly backup your `data/` directory containing participated users
+If you prefer EC2 over ECS:
 
----
+1. Launch Ubuntu EC2 and SSH in.
+2. Install Docker + Compose plugin.
+3. Clone repo, create `.env`, and run:
 
-## Troubleshooting
-
-### Bot won't start
-- Check credentials: `cat /opt/random-coffee-bot/.env`
-- Check logs: `journalctl -u random-coffee-bot.service -n 20`
-- Test manually: `source venv/bin/activate && python RandomCoffeBot.py`
-
-### Bot keeps crashing
-- Check for syntax errors in the bot code
-- Ensure all dependencies are installed: `pip list`
-- Check disk space: `df -h`
-- Check memory: `free -h`
-
-### Can't connect via SSH
-- Verify security group allows port 22
-- Check public IP is correct
-- Ensure key permissions: `chmod 400 your-key.pem`
-
----
-
-## Data Persistence
-
-Your bot data (polls, participants) is stored in `/opt/random-coffee-bot/data/`:
-- `current_poll_id.json`: Current poll information
-- `participants.json`: Weekly participants
-
-**Backup regularly**:
 ```bash
-tar -czf ~/random-coffee-backup-$(date +%Y%m%d).tar.gz /opt/random-coffee-bot/data/
+docker compose up -d --build
 ```
 
----
-
-## Estimated AWS Costs
-
-- **EC2 t2.micro**: FREE (12 months with Free Tier)
-- **EC2 t2.small**: ~$10/month
-- **Storage**: Minimal (included in Free Tier)
-- **Data Transfer**: Minimal (included in Free Tier)
-
----
-
-## Next Steps
-
-1. Follow the deployment steps above
-2. Monitor the bot for 24-48 hours
-3. Verify the bot sends polls and pairings correctly
-4. Set up monitoring/alerts (optional but recommended)
+This is simpler, but ECS is the more managed AWS option.
