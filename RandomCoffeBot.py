@@ -3,11 +3,12 @@ import logging
 import os
 import random
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import schedule
-from telegram import Bot
-from telegram.constants import ParseMode
+from telegram import Bot, ParseMode
 from telegram.ext import PollAnswerHandler, Updater
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -155,13 +156,22 @@ def poll_answer_handler(update, _context) -> None:
     save_data()
 
 
-def schedule_job(day: str, execution_time: str, job, job_name: str) -> None:
+def run_scheduled_job(job_name: str, job: Callable[[], None]) -> None:
+    logger.info("Running scheduled %s at %s", job_name, datetime.now().astimezone().isoformat(timespec="seconds"))
+    try:
+        job()
+    except Exception:
+        logger.exception("Scheduled %s failed", job_name)
+
+
+def schedule_job(day: str, execution_time: str, job: Callable[[], None], job_name: str) -> schedule.Job:
     day_method = getattr(schedule.every(), day, None)
     if day_method is None:
         raise ValueError(f"Unsupported day: {day}")
 
-    day_method.at(execution_time).do(job)
-    logger.info("Scheduled %s on %s at %s", job_name, day, execution_time)
+    scheduled_job = day_method.at(execution_time).do(lambda: run_scheduled_job(job_name, job))
+    logger.info("Scheduled %s on %s at %s (next run: %s)", job_name, day, execution_time, scheduled_job.next_run)
+    return scheduled_job
 
 
 def main() -> None:
@@ -174,14 +184,26 @@ def main() -> None:
 
     load_data()
 
-    schedule_job(POLL_DAY, POLL_TIME, lambda: send_poll(bot), "poll")
-    schedule_job(PAIRING_DAY, PAIRING_TIME, lambda: pair_up(bot), "pairing")
+    poll_job = schedule_job(POLL_DAY, POLL_TIME, lambda: send_poll(bot), "poll")
+    pairing_job = schedule_job(PAIRING_DAY, PAIRING_TIME, lambda: pair_up(bot), "pairing")
 
     updater.start_polling()
+    logger.info(
+        "Local scheduler time now %s (tzname=%s, poll next=%s, pairing next=%s)",
+        datetime.now().astimezone().isoformat(timespec="seconds"),
+        "/".join(time.tzname),
+        poll_job.next_run,
+        pairing_job.next_run,
+    )
     logger.info("Bot started successfully.")
 
+    last_heartbeat_minute = -1
     while True:
         schedule.run_pending()
+        now = datetime.now()
+        if now.minute != last_heartbeat_minute and now.minute % 15 == 0:
+            logger.info("Scheduler heartbeat at %s", now.astimezone().isoformat(timespec="seconds"))
+            last_heartbeat_minute = now.minute
         time.sleep(1)
 
 

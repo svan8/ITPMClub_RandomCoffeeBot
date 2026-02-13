@@ -8,5 +8,7 @@ services:
     environment:
       # Keep bot state persisted on mounted volume
       DATA_DIR: /app/data
+      # Scheduler uses container local time. Configure this in .env (e.g. Europe/Berlin).
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data:/app/data
