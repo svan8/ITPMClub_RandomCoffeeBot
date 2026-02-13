@@ -126,3 +126,48 @@ sudo systemctl start random-coffee-bot.service
 sudo systemctl status random-coffee-bot.service
 journalctl -u random-coffee-bot.service -n 20
 ```
+
+---
+
+## Docker (Local)
+
+### Start
+```bash
+docker compose up -d --build
+```
+
+### Logs
+```bash
+docker compose logs -f
+```
+
+### Restart
+```bash
+docker compose restart
+```
+
+### Stop and remove containers
+```bash
+docker compose down
+```
+
+---
+
+## Docker (AWS ECS)
+
+### Push updated image
+```bash
+docker build -t random-coffee-bot:latest .
+docker tag random-coffee-bot:latest <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/random-coffee-bot:latest
+docker push <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/random-coffee-bot:latest
+```
+
+### Run one task
+```bash
+aws ecs run-task --cluster random-coffee-bot-cluster --launch-type FARGATE --task-definition random-coffee-bot --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxx],securityGroups=[sg-xxxx],assignPublicIp=ENABLED}" --region <REGION>
+```
+
+### Tail logs
+```bash
+aws logs tail /ecs/random-coffee-bot --follow --region <REGION>
+```
