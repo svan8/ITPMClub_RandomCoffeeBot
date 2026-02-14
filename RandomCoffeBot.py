@@ -88,19 +88,16 @@ def send_poll(bot: Bot) -> None:
     save_data()
 
 
-def build_pairs() -> list[tuple[int, ...]]:
+def build_pairs() -> tuple[list[tuple[int, int]], int | None]:
     participant_ids = list(participants.keys())
     random.shuffle(participant_ids)
 
-    pairs: list[tuple[int, ...]] = []
-    for index in range(0, len(participant_ids), 2):
-        if index + 1 < len(participant_ids):
-            pairs.append((participant_ids[index], participant_ids[index + 1]))
-        elif pairs:
-            pairs[-1] = (*pairs[-1], participant_ids[index])
-        else:
-            pairs.append((participant_ids[index],))
-    return pairs
+    unmatched_user_id = None
+    if len(participant_ids) % 2 == 1:
+        unmatched_user_id = participant_ids.pop()
+
+    pairs = [(participant_ids[index], participant_ids[index + 1]) for index in range(0, len(participant_ids), 2)]
+    return pairs, unmatched_user_id
 
 
 def pair_up(bot: Bot) -> None:
@@ -116,16 +113,17 @@ def pair_up(bot: Bot) -> None:
     if len(participants) < 2:
         bot.send_message(chat_id=CHAT_ID, text="Not enough participants this week.")
     else:
-        pairs = build_pairs()
+        pairs, unmatched_user_id = build_pairs()
         message_lines = ["This week's random coffee pairs are:"]
-        for pair in pairs:
-            mentions = [f"[{participants[user_id]}](tg://user?id={user_id})" for user_id in pair]
-            if len(pair) == 2:
-                message_lines.append(f"- {mentions[0]} and {mentions[1]}")
-            elif len(pair) == 3:
-                message_lines.append(f"- {mentions[0]}, {mentions[1]}, and {mentions[2]}")
-            else:
-                message_lines.append(f"- {mentions[0]}")
+        for user_id_1, user_id_2 in pairs:
+            mention_1 = f"[{participants[user_id_1]}](tg://user?id={user_id_1})"
+            mention_2 = f"[{participants[user_id_2]}](tg://user?id={user_id_2})"
+            message_lines.append(f"- {mention_1} and {mention_2}")
+
+        if unmatched_user_id is not None:
+            unmatched_mention = f"[{participants[unmatched_user_id]}](tg://user?id={unmatched_user_id})"
+            message_lines.append("")
+            message_lines.append(f"Final call: please schedule a 1:1 with {unmatched_mention} this week.")
 
         bot.send_message(
             chat_id=CHAT_ID,
