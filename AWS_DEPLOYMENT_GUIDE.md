@@ -2,6 +2,34 @@
 
 This guide deploys the bot as a container using **Amazon ECR + Amazon ECS Fargate**.
 
+## AWS Solution Architecture
+
+```mermaid
+flowchart TB
+    subgraph LOCAL["Local CI/CD"]
+        DEV["Developer or CI Pipeline"]
+    end
+
+    subgraph AWS["AWS Account"]
+        ECR["Amazon ECR"]
+        subgraph ECS["Amazon ECS (Fargate)"]
+            TASK["Random Coffee Bot Task<br/>(desired count: 1)"]
+        end
+        CW["Amazon CloudWatch Logs"]
+        SSM["AWS Systems Manager Parameter Store<br/>or AWS Secrets Manager"]
+        IAM["IAM Task Execution Role"]
+    end
+
+    TG["Telegram Bot API"]
+
+    DEV -->|Build and push image| ECR
+    ECR -->|Pull image| TASK
+    IAM -->|Task permissions| TASK
+    SSM -->|Runtime config and secrets| TASK
+    TASK -->|App logs| CW
+    TASK <-->|Polls and messages| TG
+```
+
 ## Prerequisites
 
 - AWS account with permissions for ECR, ECS, IAM, and CloudWatch Logs
