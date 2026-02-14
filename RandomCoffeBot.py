@@ -110,8 +110,19 @@ def pair_up(bot: Bot) -> None:
     logger.info("Closing poll and generating pairings.")
     bot.stop_poll(chat_id=CHAT_ID, message_id=current_poll_message_id)
 
-    if len(participants) < 2:
+    if len(participants) == 0:
         bot.send_message(chat_id=CHAT_ID, text="Not enough participants this week.")
+    elif len(participants) == 1:
+        user_id, first_name = next(iter(participants.items()))
+        mention = f"[{first_name}](tg://user?id={user_id})"
+        bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                "No pairs were created due to not enough participants this week.\n"
+                f"If anyone wants to have a call, please reach out to {mention}."
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
     else:
         pairs, unmatched_user_id = build_pairs()
         message_lines = ["This week's random coffee pairs are:"]
